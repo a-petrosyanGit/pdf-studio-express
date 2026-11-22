@@ -20,10 +20,10 @@ import pdf_core
 try:
     import ctypes
     ctypes.windll.shcore.SetProcessDpiAwareness(1)
-except Exception:
+except (AttributeError, OSError):
     try:
         ctypes.windll.user32.SetProcessDPIAware()
-    except Exception:
+    except (AttributeError, OSError):
         pass
 
 
@@ -92,7 +92,7 @@ class PDFEditorApp(tk.Tk):
         if self.working_pdf_path and os.path.exists(self.working_pdf_path) and self.working_pdf_path != self.current_pdf_path:
             try:
                 os.remove(self.working_pdf_path)
-            except Exception:
+            except OSError:
                 pass
         self.destroy()
 
@@ -956,7 +956,7 @@ class PDFEditorApp(tk.Tk):
             if old_working and os.path.exists(old_working) and old_working != self.current_pdf_path:
                 try:
                     os.remove(old_working)
-                except Exception:
+                except OSError:
                     pass
             if old_working and os.path.exists(old_working) and old_working != self.current_pdf_path:
                 try:
@@ -1019,7 +1019,7 @@ class PDFEditorApp(tk.Tk):
             if old_working and os.path.exists(old_working) and old_working != self.current_pdf_path:
                 try:
                     os.remove(old_working)
-                except Exception:
+                except OSError:
                     pass
             msg = f"{cnt} occurrence(s) remplacée(s) avec succès avec la même police !"
             messagebox.showinfo("Succès", msg)

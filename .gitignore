@@ -28,3 +28,7 @@ Desktop.ini
 # IDEs
 .vscode/
 .idea/
+
+# Rapports d'audit locaux (strictement confidentiels / non versionnés)
+AUDIT_SECURITE_LOCAL.md
+*audit*local*
