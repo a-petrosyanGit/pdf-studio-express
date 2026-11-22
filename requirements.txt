@@ -3,3 +3,4 @@ Pillow>=10.0.0
 rapidocr-onnxruntime>=1.2.0
 streamlit>=1.30.0
 fpdf2>=2.8.0
+pytest>=8.0.0

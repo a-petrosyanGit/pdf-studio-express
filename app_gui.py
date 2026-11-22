@@ -8,13 +8,16 @@ import os
 import sys
 import threading
 import tempfile
-from typing import List, Dict, Any, Optional, Tuple
+from concurrent.futures import ThreadPoolExecutor
+from typing import List, Dict, Any, Optional, Tuple, Callable
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from PIL import Image, ImageTk
 import fitz
 
 import pdf_core
+from core.session import DocumentSession
+from core.models import PageConfig
 
 # Configuration du DPI awareness pour un affichage net sur Windows 10/11
 try:
@@ -57,6 +60,14 @@ class PDFEditorApp(tk.Tk):
 
         self.configure(bg=self.colors["bg"])
 
+        # Modèle de session partagée & exécuteur de tâches asynchrones
+        self.session = DocumentSession()
+        self.executor = ThreadPoolExecutor(max_workers=2)
+
+        # Taille des miniatures configurable
+        self.thumbnail_size: Tuple[int, int] = (160, 220)
+        self.zoom_var: Optional[tk.StringVar] = None
+
         # État général du document ouvert
         self.current_pdf_path: Optional[str] = None
         self.current_pdf_password: str = ""
@@ -82,18 +93,65 @@ class PDFEditorApp(tk.Tk):
         self._init_styles()
         self._build_ui()
 
-        # Raccourcis clavier
+        # Raccourcis clavier ergonomiques
         self.bind("<Control-o>", lambda e: self._open_pdf_dialog())
         self.bind("<Control-s>", lambda e: self._save_modified_pdf())
+        self.bind("<Control-z>", lambda e: self._on_undo())
+        self.bind("<Control-y>", lambda e: self._on_redo())
+        self.bind("<Delete>", lambda e: self._delete_selected())
+        self.bind("<Control-a>", lambda e: self._toggle_select_all())
+        self.bind("<Control-f>", lambda e: self.show_tab("text_edit"))
         self.protocol("WM_DELETE_WINDOW", self._on_app_closing)
 
-    def _on_app_closing(self):
-        """Nettoie les fichiers temporaires à la fermeture de l'application."""
-        if self.working_pdf_path and os.path.exists(self.working_pdf_path) and self.working_pdf_path != self.current_pdf_path:
+    def run_async(
+        self,
+        worker: Callable[[], Any],
+        on_success: Callable[[Any], None],
+        on_error: Optional[Callable[[Exception], None]] = None,
+        status_msg: Optional[str] = None
+    ) -> None:
+        """Exécute une tâche lourde en arrière-plan sans bloquer l'interface Tkinter."""
+        if status_msg:
+            self.set_status(f"⏳ {status_msg}")
             try:
-                os.remove(self.working_pdf_path)
-            except OSError:
+                self.config(cursor="watch")
+            except tk.TclError:
                 pass
+
+        def task_wrapper():
+            try:
+                result = worker()
+                self.after(0, lambda: self._handle_async_success(result, on_success, status_msg))
+            except Exception as e:
+                self.after(0, lambda: self._handle_async_error(e, on_error))
+
+        self.executor.submit(task_wrapper)
+
+    def _handle_async_success(self, result: Any, on_success: Callable[[Any], None], original_msg: Optional[str]) -> None:
+        try:
+            self.config(cursor="")
+        except tk.TclError:
+            pass
+        on_success(result)
+
+    def _handle_async_error(self, err: Exception, on_error: Optional[Callable[[Exception], None]]) -> None:
+        try:
+            self.config(cursor="")
+        except tk.TclError:
+            pass
+        if on_error:
+            on_error(err)
+        else:
+            self.set_status(f"Erreur : {err}", is_error=True)
+            messagebox.showerror("Erreur de traitement", str(err))
+
+    def _on_app_closing(self):
+        """Nettoie les ressources et fichiers temporaires à la fermeture de l'application."""
+        try:
+            self.executor.shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            pass
+        self.session.close()
         self.destroy()
 
     def _init_styles(self):
@@ -247,25 +305,49 @@ class PDFEditorApp(tk.Tk):
         toolbar.pack(fill=tk.X, pady=(0, 10))
 
         btn_open = tk.Button(toolbar, text="📂 Ouvrir un PDF...", font=("Segoe UI", 9, "bold"), bg=self.colors["primary"], fg="#ffffff", relief=tk.FLAT, padx=12, pady=4, cursor="hand2", command=self._open_pdf_dialog)
-        btn_open.pack(side=tk.LEFT, padx=(0, 8))
+        btn_open.pack(side=tk.LEFT, padx=(0, 6))
 
-        btn_rot_left = tk.Button(toolbar, text="↺ Tourner -90°", font=("Segoe UI", 9), bg="#f1f5f9", fg=self.colors["text_dark"], relief=tk.FLAT, padx=8, pady=4, cursor="hand2", command=lambda: self._rotate_selected(-90))
-        btn_rot_left.pack(side=tk.LEFT, padx=3)
+        # Annuler / Rétablir
+        self.btn_undo = tk.Button(toolbar, text="↩ Annuler", font=("Segoe UI", 9), bg="#f1f5f9", fg=self.colors["text_dark"], relief=tk.FLAT, padx=7, pady=4, cursor="hand2", command=self._on_undo)
+        self.btn_undo.pack(side=tk.LEFT, padx=2)
 
-        btn_rot_right = tk.Button(toolbar, text="↻ Tourner +90°", font=("Segoe UI", 9), bg="#f1f5f9", fg=self.colors["text_dark"], relief=tk.FLAT, padx=8, pady=4, cursor="hand2", command=lambda: self._rotate_selected(90))
-        btn_rot_right.pack(side=tk.LEFT, padx=3)
+        self.btn_redo = tk.Button(toolbar, text="↪ Rétablir", font=("Segoe UI", 9), bg="#f1f5f9", fg=self.colors["text_dark"], relief=tk.FLAT, padx=7, pady=4, cursor="hand2", command=self._on_redo)
+        self.btn_redo.pack(side=tk.LEFT, padx=2)
 
-        btn_move_left = tk.Button(toolbar, text="⬅ Monter / Avancer", font=("Segoe UI", 9), bg="#f1f5f9", fg=self.colors["text_dark"], relief=tk.FLAT, padx=8, pady=4, cursor="hand2", command=self._move_selected_left)
-        btn_move_left.pack(side=tk.LEFT, padx=3)
+        tk.Frame(toolbar, bg="#cbd5e1", width=1, height=20).pack(side=tk.LEFT, padx=5)
 
-        btn_move_right = tk.Button(toolbar, text="➡ Descendre / Reculer", font=("Segoe UI", 9), bg="#f1f5f9", fg=self.colors["text_dark"], relief=tk.FLAT, padx=8, pady=4, cursor="hand2", command=self._move_selected_right)
-        btn_move_right.pack(side=tk.LEFT, padx=3)
+        btn_rot_left = tk.Button(toolbar, text="↺ -90°", font=("Segoe UI", 9), bg="#f1f5f9", fg=self.colors["text_dark"], relief=tk.FLAT, padx=7, pady=4, cursor="hand2", command=lambda: self._rotate_selected(-90))
+        btn_rot_left.pack(side=tk.LEFT, padx=2)
 
-        btn_del = tk.Button(toolbar, text="🗑️ Supprimer", font=("Segoe UI", 9, "bold"), bg="#fee2e2", fg=self.colors["danger"], relief=tk.FLAT, padx=8, pady=4, cursor="hand2", command=self._delete_selected)
-        btn_del.pack(side=tk.LEFT, padx=3)
+        btn_rot_right = tk.Button(toolbar, text="↻ +90°", font=("Segoe UI", 9), bg="#f1f5f9", fg=self.colors["text_dark"], relief=tk.FLAT, padx=7, pady=4, cursor="hand2", command=lambda: self._rotate_selected(90))
+        btn_rot_right.pack(side=tk.LEFT, padx=2)
 
-        btn_select_all = tk.Button(toolbar, text="Tout sélectionner", font=("Segoe UI", 9), bg="#f1f5f9", fg=self.colors["text_dark"], relief=tk.FLAT, padx=8, pady=4, cursor="hand2", command=self._toggle_select_all)
-        btn_select_all.pack(side=tk.LEFT, padx=3)
+        btn_move_left = tk.Button(toolbar, text="⬅ Monter", font=("Segoe UI", 9), bg="#f1f5f9", fg=self.colors["text_dark"], relief=tk.FLAT, padx=7, pady=4, cursor="hand2", command=self._move_selected_left)
+        btn_move_left.pack(side=tk.LEFT, padx=2)
+
+        btn_move_right = tk.Button(toolbar, text="➡ Descendre", font=("Segoe UI", 9), bg="#f1f5f9", fg=self.colors["text_dark"], relief=tk.FLAT, padx=7, pady=4, cursor="hand2", command=self._move_selected_right)
+        btn_move_right.pack(side=tk.LEFT, padx=2)
+
+        btn_del = tk.Button(toolbar, text="🗑️ Suppr.", font=("Segoe UI", 9, "bold"), bg="#fee2e2", fg=self.colors["danger"], relief=tk.FLAT, padx=7, pady=4, cursor="hand2", command=self._delete_selected)
+        btn_del.pack(side=tk.LEFT, padx=2)
+
+        btn_select_all = tk.Button(toolbar, text="Tout", font=("Segoe UI", 9), bg="#f1f5f9", fg=self.colors["text_dark"], relief=tk.FLAT, padx=7, pady=4, cursor="hand2", command=self._toggle_select_all)
+        btn_select_all.pack(side=tk.LEFT, padx=2)
+
+        tk.Frame(toolbar, bg="#cbd5e1", width=1, height=20).pack(side=tk.LEFT, padx=5)
+
+        # Sélecteur de Zoom des vignettes
+        tk.Label(toolbar, text="🔍 Zoom :", font=("Segoe UI", 9), bg="#ffffff", fg=self.colors["text_dark"]).pack(side=tk.LEFT, padx=(2, 2))
+        self.zoom_var = tk.StringVar(value="Moyen (160x220)")
+        self.zoom_combo = ttk.Combobox(
+            toolbar,
+            textvariable=self.zoom_var,
+            values=["Petit (120x160)", "Moyen (160x220)", "Grand (220x300)"],
+            state="readonly",
+            width=15
+        )
+        self.zoom_combo.pack(side=tk.LEFT, padx=2)
+        self.zoom_combo.bind("<<ComboboxSelected>>", self._on_zoom_changed)
 
         btn_export_sel = tk.Button(toolbar, text="📤 Extraire sélection", font=("Segoe UI", 9), bg="#e0e7ff", fg=self.colors["primary"], relief=tk.FLAT, padx=10, pady=4, cursor="hand2", command=self._export_selected_pages)
         btn_export_sel.pack(side=tk.RIGHT, padx=4)
@@ -312,10 +394,63 @@ class PDFEditorApp(tk.Tk):
         if filepath:
             self.load_pdf(filepath)
 
+    def _on_zoom_changed(self, event=None):
+        val = self.zoom_var.get() if self.zoom_var else ""
+        if "Petit" in val:
+            self.thumbnail_size = (120, 160)
+        elif "Grand" in val:
+            self.thumbnail_size = (220, 300)
+        else:
+            self.thumbnail_size = (160, 220)
+        self._reload_session_thumbnails()
+
+    def _on_undo(self):
+        if self.session.undo():
+            self.working_pdf_path = self.session.working_path
+            self.set_status("↩ Annulation effectuée.")
+            self._reload_session_thumbnails()
+            self._text_edit_refresh_page()
+        else:
+            self.set_status("Rien à annuler.")
+
+    def _on_redo(self):
+        if self.session.redo():
+            self.working_pdf_path = self.session.working_path
+            self.set_status("↪ Rétablissement effectué.")
+            self._reload_session_thumbnails()
+            self._text_edit_refresh_page()
+        else:
+            self.set_status("Rien à rétablir.")
+
+    def _reload_session_thumbnails(self):
+        target_path = self.working_pdf_path or self.current_pdf_path
+        if not target_path or not os.path.exists(target_path):
+            return
+
+        def worker():
+            return pdf_core.render_all_thumbnails(
+                target_path,
+                max_size=self.thumbnail_size,
+                password=self.current_pdf_password
+            )
+
+        def on_success(thumbs):
+            self.pages_data = []
+            for idx, thumb in enumerate(thumbs):
+                self.pages_data.append({
+                    "source_page": idx,
+                    "rotation": 0,
+                    "orig_thumb": thumb,
+                    "display_thumb": thumb,
+                    "tk_thumb": ImageTk.PhotoImage(thumb)
+                })
+            self._refresh_grid_layout()
+
+        self.run_async(worker, on_success, status_msg="Actualisation des vignettes...")
+
     def load_pdf(self, filepath: str):
         self.set_status(f"Chargement de {os.path.basename(filepath)}...")
         self.lbl_current_file_info.config(text=f"Chargement : {filepath}...")
-        self.update_idletasks()
 
         try:
             info = pdf_core.get_pdf_info(filepath)
@@ -323,15 +458,18 @@ class PDFEditorApp(tk.Tk):
                 self._prompt_password(filepath)
                 return
 
-            # Copie de travail temporaire pour permettre des modifications non destructives
-            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
-            with open(filepath, "rb") as src_f:
-                tmp.write(src_f.read())
-            tmp.close()
-            self.working_pdf_path = tmp.name
+            def worker():
+                self.session.load_document(filepath)
+                self.working_pdf_path = self.session.working_path
+                return pdf_core.render_all_thumbnails(
+                    self.working_pdf_path,
+                    max_size=self.thumbnail_size
+                )
 
-            thumbs = pdf_core.render_all_thumbnails(filepath, max_size=(150, 200))
-            self._on_pdf_loaded(filepath, thumbs)
+            def on_success(thumbs):
+                self._on_pdf_loaded(filepath, thumbs)
+
+            self.run_async(worker, on_success, on_error=lambda e: self._on_pdf_error(str(e)), status_msg="Chargement du document et rendu des vignettes...")
         except Exception as e:
             self._on_pdf_error(str(e))
 
@@ -352,19 +490,23 @@ class PDFEditorApp(tk.Tk):
             win.destroy()
             try:
                 info = pdf_core.get_pdf_info(filepath, password=pw)
-                if info.get("is_encrypted", False):
+                if info.get("is_encrypted", False) and info.get("page_count", 0) == 0:
                     messagebox.showerror("Erreur", "Mot de passe incorrect.")
                     return
-                
-                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
-                doc = fitz.open(filepath)
-                doc.authenticate(pw)
-                doc.save(tmp.name)
-                doc.close()
-                self.working_pdf_path = tmp.name
 
-                thumbs = pdf_core.render_all_thumbnails(filepath, max_size=(150, 200), password=pw)
-                self._on_pdf_loaded(filepath, thumbs, password=pw)
+                def worker():
+                    self.session.load_document(filepath, password=pw)
+                    self.working_pdf_path = self.session.working_path
+                    return pdf_core.render_all_thumbnails(
+                        self.working_pdf_path,
+                        max_size=self.thumbnail_size,
+                        password=pw
+                    )
+
+                def on_success(thumbs):
+                    self._on_pdf_loaded(filepath, thumbs, password=pw)
+
+                self.run_async(worker, on_success, on_error=lambda e: messagebox.showerror("Erreur", str(e)), status_msg="Déverrouillage du document...")
             except Exception as e:
                 messagebox.showerror("Erreur", str(e))
 
@@ -864,10 +1006,12 @@ class PDFEditorApp(tk.Tk):
         pdf_path = self.working_pdf_path if self.working_pdf_path else self.current_pdf_path
         if not pdf_path or not os.path.exists(pdf_path):
             return
-        self.set_status("Scan OCR en cours sur cette page...")
-        self.update_idletasks()
-        try:
-            self.text_elements = pdf_core.get_page_text_elements(pdf_path, self.text_edit_page, force_ocr=True)
+
+        def worker():
+            return pdf_core.get_page_text_elements(pdf_path, self.text_edit_page, force_ocr=True)
+
+        def on_success(elements):
+            self.text_elements = elements
             for item in self.te_tree.get_children():
                 self.te_tree.delete(item)
             for elem in self.text_elements:
@@ -880,9 +1024,9 @@ class PDFEditorApp(tk.Tk):
             self.lbl_detected_font_badge.config(
                 text=f"🔍 Scan OCR terminé : {len(self.text_elements)} ligne(s) détectée(s) sur la page {self.text_edit_page + 1}."
             )
-            self.set_status("Scan OCR terminé.")
-        except Exception as e:
-            messagebox.showerror("Erreur OCR", str(e))
+            self.set_status("Scan OCR terminé avec succès.")
+
+        self.run_async(worker, on_success, status_msg=f"Reconnaissance OCR en cours sur la page {self.text_edit_page + 1}...")
 
     def _text_edit_prev_page(self):
         if self.text_edit_page > 0:
@@ -929,14 +1073,12 @@ class PDFEditorApp(tk.Tk):
             return
 
         current_path = self.working_pdf_path if self.working_pdf_path else self.current_pdf_path
-        tmp_out = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
-        tmp_out_path = tmp_out.name
-        tmp_out.close()
+        tmp_out = self.session.temp_manager.create_temp_file(suffix=".pdf")
 
-        try:
+        def worker():
             pdf_core.replace_text_element_in_pdf(
                 current_path,
-                tmp_out_path,
+                tmp_out,
                 page_num=self.text_edit_page,
                 elem_bbox=elem["bbox"],
                 new_text=new_text,
@@ -948,26 +1090,13 @@ class PDFEditorApp(tk.Tk):
                 use_white_bg=self.te_white_bg_var.get(),
                 is_ocr=elem.get("is_ocr", False)
             )
+            self.session.commit_working_copy(tmp_out)
+            self.working_pdf_path = self.session.working_path
+            return pdf_core.render_all_thumbnails(self.working_pdf_path, max_size=self.thumbnail_size)
 
-            # Mettre à jour le fichier de travail actif et nettoyer l'ancien
-            old_working = self.working_pdf_path
-            old_working = self.working_pdf_path
-            self.working_pdf_path = tmp_out_path
-            if old_working and os.path.exists(old_working) and old_working != self.current_pdf_path:
-                try:
-                    os.remove(old_working)
-                except OSError:
-                    pass
-            if old_working and os.path.exists(old_working) and old_working != self.current_pdf_path:
-                try:
-                    os.remove(old_working)
-                except Exception:
-                    pass
-            self.set_status("Texte remplacé avec succès (même police conservée) !")
+        def on_success(thumbs):
+            self.set_status("Texte remplacé avec succès (auto-ajustement et police conservée) !")
             self._text_edit_refresh_page()
-
-            # Mettre à jour également les miniatures de l'organiseur
-            thumbs = pdf_core.render_all_thumbnails(self.working_pdf_path, max_size=(150, 200))
             for i, thumb in enumerate(thumbs):
                 if i < len(self.pages_data):
                     self.pages_data[i]["orig_thumb"] = thumb
@@ -977,8 +1106,7 @@ class PDFEditorApp(tk.Tk):
                     self.pages_data[i]["tk_thumb"] = ImageTk.PhotoImage(rotated_img)
             self._refresh_grid_layout()
 
-        except Exception as e:
-            messagebox.showerror("Erreur de remplacement", str(e))
+        self.run_async(worker, on_success, status_msg="Remplacement et redimensionnement du texte...")
 
     def _apply_search_and_replace(self):
         search_str = self.sr_find_var.get().strip()
@@ -993,41 +1121,37 @@ class PDFEditorApp(tk.Tk):
             messagebox.showwarning("Attention", "Aucun PDF n'est ouvert.")
             return
 
-        tmp_out = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
-        tmp_out_path = tmp_out.name
-        tmp_out.close()
-
+        tmp_out = self.session.temp_manager.create_temp_file(suffix=".pdf")
         target_p = self.text_edit_page if self.sr_scope_var.get() == "page" else None
 
-        try:
+        def worker():
             cnt = pdf_core.search_and_replace_text_in_pdf(
                 current_path,
-                tmp_out_path,
+                tmp_out,
                 search_text=search_str,
                 replace_text=replace_str,
                 target_page=target_p
             )
+            if cnt > 0:
+                self.session.commit_working_copy(tmp_out)
+                self.working_pdf_path = self.session.working_path
+                thumbs = pdf_core.render_all_thumbnails(self.working_pdf_path, max_size=self.thumbnail_size)
+                return cnt, thumbs
+            else:
+                self.session.temp_manager.remove_file(tmp_out)
+                return 0, []
 
+        def on_success(result):
+            cnt, thumbs = result
             if cnt == 0:
                 messagebox.showinfo("Résultat", f"Le texte « {search_str} » n'a pas été trouvé.")
-                if os.path.exists(tmp_out_path):
-                    os.remove(tmp_out_path)
                 return
 
-            old_working = self.working_pdf_path
-            self.working_pdf_path = tmp_out_path
-            if old_working and os.path.exists(old_working) and old_working != self.current_pdf_path:
-                try:
-                    os.remove(old_working)
-                except OSError:
-                    pass
             msg = f"{cnt} occurrence(s) remplacée(s) avec succès avec la même police !"
             messagebox.showinfo("Succès", msg)
             self.set_status(msg)
             self._text_edit_refresh_page()
 
-            # Actualiser les vignettes
-            thumbs = pdf_core.render_all_thumbnails(self.working_pdf_path, max_size=(150, 200))
             for i, thumb in enumerate(thumbs):
                 if i < len(self.pages_data):
                     self.pages_data[i]["orig_thumb"] = thumb
@@ -1037,8 +1161,7 @@ class PDFEditorApp(tk.Tk):
                     self.pages_data[i]["tk_thumb"] = ImageTk.PhotoImage(rotated_img)
             self._refresh_grid_layout()
 
-        except Exception as e:
-            messagebox.showerror("Erreur", str(e))
+        self.run_async(worker, on_success, status_msg=f"Recherche et remplacement de « {search_str} »...")
 
     def _text_edit_save_as(self):
         current_path = self.working_pdf_path if self.working_pdf_path else self.current_pdf_path

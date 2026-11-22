@@ -64,11 +64,30 @@ pip install -r requirements.txt
 
 ## Structure du projet
 
-- `app_gui.py` : Application de bureau principale (Tkinter).
-- `app_web.py` : Interface web alternative (Streamlit).
-- `pdf_core.py` : Moteur de manipulation de documents et intégration OCR.
-- `requirements.txt` : Liste des bibliothèques nécessaires.
-- `Lancer_Editeur_PDF.bat` : Script de démarrage pour l'application bureau sous Windows.
-- `Lancer_Version_Web.bat` : Script de démarrage pour la version web.
-- `Lancer_Silencieux.vbs` : Lanceur sans console visible.
-- `exemple_document.pdf` : Fichier de démonstration inclus pour les tests.
+- `core/` : Package modulaire métier (principes SOLID) :
+  - `models.py` : Dataclasses typées (`PDFMetadata`, `TextElement`, `PageConfig`, etc.).
+  - `temp_manager.py` : Gestionnaire sécurisé de fichiers temporaires et nettoyage automatique.
+  - `fonts.py` : Résolution typographique multi-OS (Win/Mac/Linux) et mise à l'échelle (auto-fit).
+  - `ocr_engine.py` : Singleton RapidOCR et échantillonnage de la couleur réelle du papier.
+  - `pages.py` : Manipulation de pages, vignettes, filigranes et conversion d'images.
+  - `text_editor.py` : Remplacement haute fidélité avec prévention des chevauchements.
+  - `security.py` : Chiffrement AES-256 et déverrouillage de documents.
+  - `optimization.py` : Compression Flate et extraction textuelle.
+  - `session.py` : Gestionnaire d'état partagé (`DocumentSession`) avec pile Undo/Redo.
+- `tests/` : Suite complète de 32 tests unitaires et d'intégration (`pytest`).
+- `pdf_core.py` : Façade d'accès rétrocompatible reliant l'API legacy au nouveau cœur.
+- `app_gui.py` : Application de bureau (Tkinter, threadée/non-bloquante, zoom vignettes, Undo/Redo).
+- `app_web.py` : Interface web (Streamlit, mise en cache haute performance `@st.cache_resource` et `@st.cache_data`).
+- `requirements.txt` : Liste des dépendances.
+- `Lancer_Editeur_PDF.bat` : Script de démarrage automatique de l'interface bureau.
+- `Lancer_Version_Web.bat` : Script de démarrage de l'interface web.
+
+---
+
+## Tests automatisés
+
+Pour exécuter l'ensemble de la suite de tests (32 tests unitaires et d'intégration) :
+
+```bash
+pytest tests/ -v
+```
