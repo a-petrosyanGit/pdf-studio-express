@@ -1,10 +1,9 @@
 """
-tests/test_session.py - Tests unitaires pour DocumentSession, historique Undo/Redo et gestion temporaire.
+tests/test_session.py - Tests unitaires pour DocumentSession et historique Undo/Redo.
 """
 
 import os
-import pytest
-import fitz
+import pymupdf as fitz
 
 from core.session import DocumentSession
 from core.temp_manager import SessionTempManager
@@ -15,7 +14,6 @@ def test_session_load_and_working_copy(sample_vector_pdf, fresh_session):
     assert meta.page_count == 3
     assert fresh_session.working_path is not None
     assert os.path.exists(fresh_session.working_path)
-    # Vérifier que la copie de travail est distincte du fichier source
     assert fresh_session.working_path != sample_vector_pdf
     assert len(fresh_session.page_configs) == 3
 
@@ -24,7 +22,6 @@ def test_session_undo_redo(sample_vector_pdf, fresh_session):
     fresh_session.load_document(sample_vector_pdf)
     orig_working = fresh_session.working_path
 
-    # Simuler une première modification (ex: commit d'un nouveau PDF)
     new_tmp1 = fresh_session.temp_manager.create_temp_file()
     doc1 = fitz.open(orig_working)
     doc1[0].set_rotation(90)
@@ -36,12 +33,10 @@ def test_session_undo_redo(sample_vector_pdf, fresh_session):
     assert fresh_session.can_redo is False
     assert fresh_session.working_path == new_tmp1
 
-    # Annuler (Undo)
     assert fresh_session.undo() is True
     assert fresh_session.working_path == orig_working
     assert fresh_session.can_redo is True
 
-    # Rétablir (Redo)
     assert fresh_session.redo() is True
     assert fresh_session.working_path == new_tmp1
     assert fresh_session.can_undo is True
@@ -49,15 +44,12 @@ def test_session_undo_redo(sample_vector_pdf, fresh_session):
 
 def test_session_page_actions(sample_vector_pdf, fresh_session):
     fresh_session.load_document(sample_vector_pdf)
-    # Rotation de la page 0
     fresh_session.rotate_page(0, angle=90)
     assert fresh_session.page_configs[0].rotation == 90
 
-    # Suppression de la page 2
     fresh_session.delete_page(2)
     assert len(fresh_session.page_configs) == 2
 
-    # Appliquer à la copie de travail
     fresh_session.apply_page_modifications_to_working_copy()
     assert fresh_session.metadata.page_count == 2
     assert fresh_session.can_undo is True
@@ -79,5 +71,4 @@ def test_session_temp_cleanup(sample_vector_pdf):
     assert os.path.exists(session_dir)
 
     session.close()
-    # Le répertoire de la session doit avoir été supprimé proprement
     assert not os.path.exists(session_dir)

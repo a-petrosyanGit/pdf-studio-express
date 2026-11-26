@@ -1,23 +1,34 @@
 """
 core/temp_manager.py - Gestionnaire sécurisé de fichiers et répertoires temporaires.
-Isole les fichiers de travail dans un sous-répertoire dédié et nettoie automatiquement
-les résidus au démarrage et à la fermeture.
+Isole les fichiers dans un sous-répertoire dédié et nettoie les résidus.
 """
 
+import atexit
+import logging
 import os
 import shutil
 import tempfile
-import atexit
 import time
 from typing import List, Optional
 
+logger = logging.getLogger(__name__)
+
+
+def _try_remove_expired_dir(full_path: str, now: float, max_age_sec: float) -> int:
+    """Supprime un dossier s'il a dépassé la durée maximale de rétention."""
+    if not os.path.isdir(full_path):
+        return 0
+    try:
+        if (now - os.path.getmtime(full_path)) > max_age_sec:
+            shutil.rmtree(full_path, ignore_errors=True)
+            return 1
+    except OSError as exc:
+        logger.debug("Impossible de vérifier ou purger %s : %s", full_path, exc)
+    return 0
+
 
 class SessionTempManager:
-    """
-    Gestionnaire de cycle de vie des fichiers temporaires pour une session PDF Studio.
-    Crée un dossier dédié 'pdf_studio_<id>' dans le répertoire temporaire système,
-    assure un nettoyage propre et purge les dossiers orphelins anciens.
-    """
+    """Gestionnaire de cycle de vie des fichiers temporaires de session."""
 
     def __init__(self, prefix: str = "pdf_studio_"):
         self.prefix = prefix
@@ -27,17 +38,16 @@ class SessionTempManager:
         atexit.register(self.cleanup)
 
     def _init_session_dir(self) -> None:
-        """Crée un répertoire temporaire isolé pour la session courante."""
         self._temp_dir = tempfile.mkdtemp(prefix=self.prefix)
 
     @property
     def session_dir(self) -> str:
         if self._temp_dir is None or not os.path.exists(self._temp_dir):
             self._init_session_dir()
-        return self._temp_dir  # type: ignore
+        return self._temp_dir  # type: ignore[return-value]
 
     def create_temp_file(self, suffix: str = ".pdf", prefix: str = "doc_") -> str:
-        """Crée un chemin de fichier temporaire unique dans le dossier de session."""
+        """Crée un fichier temporaire unique dans le répertoire de session."""
         fd, path = tempfile.mkstemp(suffix=suffix, prefix=prefix, dir=self.session_dir)
         os.close(fd)
         self._created_files.append(path)
@@ -56,18 +66,19 @@ class SessionTempManager:
                 os.remove(file_path)
             if file_path in self._created_files:
                 self._created_files.remove(file_path)
-        except OSError:
-            pass
+        except OSError as exc:
+            logger.debug("Suppression temporaire différée pour %s : %s", file_path, exc)
 
     def cleanup(self) -> None:
         """Supprime l'intégralité du répertoire temporaire de la session."""
-        if self._temp_dir and os.path.exists(self._temp_dir):
-            try:
-                shutil.rmtree(self._temp_dir, ignore_errors=True)
-            except OSError:
-                pass
-            self._temp_dir = None
-            self._created_files.clear()
+        if not self._temp_dir or not os.path.exists(self._temp_dir):
+            return
+        try:
+            shutil.rmtree(self._temp_dir, ignore_errors=True)
+        except OSError as exc:
+            logger.warning("Nettoyage incomplet de %s : %s", self._temp_dir, exc)
+        self._temp_dir = None
+        self._created_files.clear()
 
     def __enter__(self):
         return self
@@ -76,38 +87,34 @@ class SessionTempManager:
         self.cleanup()
 
     @classmethod
-    def purge_orphaned_sessions(cls, prefix: str = "pdf_studio_", max_age_hours: float = 24.0) -> int:
-        """
-        Nettoie les anciens répertoires temporaires laissés par d'anciennes sessions
-        antérieures ou anormalement interrompues.
-        """
+    def purge_orphaned_sessions(
+        cls,
+        prefix: str = "pdf_studio_",
+        max_age_hours: float = 24.0,
+    ) -> int:
+        """Nettoie les anciens dossiers temporaires laissés par d'anciennes sessions."""
         base_temp = tempfile.gettempdir()
         now = time.time()
-        max_age_seconds = max_age_hours * 3600.0
-        purged_count = 0
-
+        max_age_sec = max_age_hours * 3600.0
+        purged = 0
         try:
-            for item in os.listdir(base_temp):
-                if item.startswith(prefix):
-                    full_path = os.path.join(base_temp, item)
-                    if os.path.isdir(full_path):
-                        try:
-                            mtime = os.path.getmtime(full_path)
-                            if (now - mtime) > max_age_seconds:
-                                shutil.rmtree(full_path, ignore_errors=True)
-                                purged_count += 1
-                        except OSError:
-                            continue
-        except OSError:
-            pass
+            entries = os.listdir(base_temp)
+        except OSError as exc:
+            logger.debug("Lecture impossible de %s : %s", base_temp, exc)
+            return 0
 
-        return purged_count
+        for item in entries:
+            if item.startswith(prefix):
+                purged += _try_remove_expired_dir(
+                    os.path.join(base_temp, item),
+                    now,
+                    max_age_sec,
+                )
+        return purged
 
 
-# Instance globale par défaut utilisable par le moteur
 default_temp_manager = SessionTempManager()
-# Purge initiale silencieuse des résidus de plus de 12 heures
 try:
     SessionTempManager.purge_orphaned_sessions(max_age_hours=12.0)
-except Exception:
-    pass
+except OSError as exc:
+    logger.debug("Purge initiale ignorée : %s", exc)

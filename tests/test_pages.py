@@ -1,27 +1,28 @@
 """
-tests/test_pages.py - Tests unitaires pour les opérations sur les pages, miniatures et assemblages.
+tests/test_pages.py - Tests unitaires pour les pages, miniatures et assemblages.
 """
 
 import os
-import pytest
-import fitz
 from PIL import Image
+import pymupdf as fitz
 
+from core.enhancements import (
+    add_watermark_and_numbering,
+    images_to_pdf,
+    pdf_to_images,
+)
+from core.models import PageConfig, PageNumberConfig, WatermarkConfig
 from core.pages import (
-    get_pdf_metadata,
-    render_page_thumbnail,
-    render_all_thumbnails,
     apply_page_modifications,
+    get_pdf_metadata,
     merge_pdfs,
     parse_page_ranges,
-    split_pdf_by_range,
+    render_all_thumbnails,
+    render_page_thumbnail,
     split_pdf_all_pages,
+    split_pdf_by_range,
     split_pdf_every_n_pages,
-    add_watermark_and_numbering,
-    pdf_to_images,
-    images_to_pdf,
 )
-from core.models import PageConfig, WatermarkConfig, PageNumberConfig
 
 
 def test_get_pdf_metadata(sample_vector_pdf):
@@ -44,7 +45,6 @@ def test_render_thumbnails(sample_vector_pdf):
 
 def test_apply_page_modifications_reorder_and_rotate(sample_vector_pdf, test_temp_dir):
     out_pdf = os.path.join(test_temp_dir, "reordered.pdf")
-    # Inverser l'ordre des pages et tourner la première page de 90°
     configs = [
         PageConfig(source_page=2, rotation=0),
         PageConfig(source_page=1, rotation=90),
@@ -54,19 +54,15 @@ def test_apply_page_modifications_reorder_and_rotate(sample_vector_pdf, test_tem
 
     doc = fitz.open(out_pdf)
     assert len(doc) == 3
-    # Vérifier rotation de la deuxième page
     assert doc[1].rotation == 90
     assert doc[0].rotation == 0
-    # Vérifier que le texte de l'ancienne page 3 se retrouve en page 1
     assert "Conclusion" in doc[0].get_text()
     doc.close()
 
 
 def test_apply_page_modifications_deletion(sample_vector_pdf, test_temp_dir):
     out_pdf = os.path.join(test_temp_dir, "deleted.pdf")
-    # Conserver uniquement la page 1 (index 0)
-    configs = [PageConfig(source_page=0, rotation=0)]
-    apply_page_modifications(sample_vector_pdf, out_pdf, configs)
+    apply_page_modifications(sample_vector_pdf, out_pdf, [PageConfig(source_page=0)])
 
     doc = fitz.open(out_pdf)
     assert len(doc) == 1
@@ -106,20 +102,22 @@ def test_split_all_pages(sample_vector_pdf, test_temp_dir):
     out_dir = os.path.join(test_temp_dir, "split_pages")
     files = split_pdf_all_pages(sample_vector_pdf, out_dir, prefix="test_page")
     assert len(files) == 3
-    for f in files:
-        assert os.path.exists(f)
+    for path in files:
+        assert os.path.exists(path)
 
 
 def test_split_every_n_pages(sample_vector_pdf, test_temp_dir):
     out_dir = os.path.join(test_temp_dir, "split_n")
     files = split_pdf_every_n_pages(sample_vector_pdf, out_dir, n=2, prefix="bloc")
-    assert len(files) == 2  # 3 pages split par 2 = 2 fichiers (bloc 1 de 2 pages, bloc 2 de 1 page)
+    assert len(files) == 2
 
 
 def test_add_watermark_and_numbering(sample_vector_pdf, test_temp_dir):
     out_pdf = os.path.join(test_temp_dir, "watermarked.pdf")
     wm_config = WatermarkConfig(text="CONFIDENTIEL", font_size=36, angle=45)
-    num_config = PageNumberConfig(enabled=True, format_str="P. {page} / {total}", position="bottom-right")
+    num_config = PageNumberConfig(
+        enabled=True, format_str="P. {page} / {total}", position="bottom-right"
+    )
 
     modified = add_watermark_and_numbering(sample_vector_pdf, out_pdf, wm_config, num_config)
     assert modified == 3
@@ -136,8 +134,7 @@ def test_images_and_pdf_conversions(sample_vector_pdf, test_temp_dir):
     assert len(created_imgs) == 3
 
     rebuilt_pdf = os.path.join(test_temp_dir, "from_imgs.pdf")
-    count = images_to_pdf(created_imgs, rebuilt_pdf)
-    assert count == 3
+    assert images_to_pdf(created_imgs, rebuilt_pdf) == 3
 
     doc = fitz.open(rebuilt_pdf)
     assert len(doc) == 3

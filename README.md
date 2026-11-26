@@ -65,7 +65,7 @@ pip install -r requirements.txt
 ## Structure du projet
 
 - `core/` : Package modulaire métier (principes SOLID) :
-  - `models.py` : Dataclasses typées (`PDFMetadata`, `TextElement`, `PageConfig`, etc.).
+  - `models.py` : Dataclasses typées et requêtes encapsulées.
   - `temp_manager.py` : Gestionnaire sécurisé de fichiers temporaires et nettoyage automatique.
   - `fonts.py` : Résolution typographique multi-OS (Win/Mac/Linux) et mise à l'échelle (auto-fit).
   - `ocr_engine.py` : Singleton RapidOCR et échantillonnage de la couleur réelle du papier.
@@ -74,10 +74,11 @@ pip install -r requirements.txt
   - `security.py` : Chiffrement AES-256 et déverrouillage de documents.
   - `optimization.py` : Compression Flate et extraction textuelle.
   - `session.py` : Gestionnaire d'état partagé (`DocumentSession`) avec pile Undo/Redo.
-- `tests/` : Suite complète de 32 tests unitaires et d'intégration (`pytest`).
-- `pdf_core.py` : Façade d'accès rétrocompatible reliant l'API legacy au nouveau cœur.
-- `app_gui.py` : Application de bureau (Tkinter, threadée/non-bloquante, zoom vignettes, Undo/Redo).
-- `app_web.py` : Interface web (Streamlit, mise en cache haute performance `@st.cache_resource` et `@st.cache_data`).
+- `ui/` : Vues modulaires Desktop (`ui/gui/`) et Web (`ui/web/`) + thème unifié (`ui/theme.py`).
+- `tests/` : Suite de 33 tests unitaires et d'intégration (`pytest`).
+- `pdf_core.py` : Façade rétrocompatible reliant l'API legacy au nouveau cœur.
+- `app_gui.py` : Coquille légère Desktop (barre Document Actif unifiée, Undo/Redo global, raccourcis).
+- `app_web.py` : Coquille légère Web (Streamlit, cache OCR/rendus, document partagé).
 - `requirements.txt` : Liste des dépendances.
 - `Lancer_Editeur_PDF.bat` : Script de démarrage automatique de l'interface bureau.
 - `Lancer_Version_Web.bat` : Script de démarrage de l'interface web.

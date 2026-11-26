@@ -1,15 +1,16 @@
 """
 core/models.py - Modèles de données typés pour PDF Studio Express.
-Utilise des dataclasses pour structurer les métadonnées, configurations et éléments du document.
+Regroupe les métadonnées, configurations et requêtes d'édition via dataclasses.
 """
 
-from dataclasses import dataclass, field
-from typing import List, Tuple, Optional, Dict, Any
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Tuple
 
 
 @dataclass
 class PDFMetadata:
     """Métadonnées générales d'un document PDF."""
+
     page_count: int = 0
     size_bytes: int = 0
     title: str = ""
@@ -37,8 +38,9 @@ class PDFMetadata:
 @dataclass
 class PageConfig:
     """Configuration d'une page pour la réorganisation et rotation."""
+
     source_page: int
-    rotation: int = 0  # 0, 90, 180, 270
+    rotation: int = 0
 
     def normalized_rotation(self) -> int:
         return self.rotation % 360
@@ -46,13 +48,14 @@ class PageConfig:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "source_page": self.source_page,
-            "rotation": self.normalized_rotation()
+            "rotation": self.normalized_rotation(),
         }
 
 
 @dataclass
 class TextElement:
-    """Représente un élément ou bloc de texte extrait d'une page (vectoriel ou OCR)."""
+    """Représente un élément ou bloc de texte extrait (vectoriel ou OCR)."""
+
     id: int
     text: str
     font: str = "Helvetica"
@@ -60,8 +63,8 @@ class TextElement:
     flags: int = 0
     color_rgb: Tuple[float, float, float] = (0.0, 0.0, 0.0)
     color_hex: str = "#000000"
-    bbox: Tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)  # (x0, y0, x1, y1)
-    origin: Tuple[float, float] = (0.0, 0.0)  # (baseline_x, baseline_y)
+    bbox: Tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
+    origin: Tuple[float, float] = (0.0, 0.0)
     is_ocr: bool = False
     bg_color_rgb: Optional[Tuple[float, float, float]] = None
 
@@ -90,23 +93,55 @@ class TextElement:
 
 
 @dataclass
+class TextEditRequest:
+    """Paramètres encapsulés pour remplacer un élément textuel ciblé."""
+
+    page_num: int
+    elem_bbox: Tuple[float, float, float, float]
+    new_text: str
+    elem_origin: Optional[Tuple[float, float]] = None
+    font_name: str = "Helvetica"
+    font_size: float = 12.0
+    font_flags: int = 0
+    font_color: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+    use_white_bg: bool = False
+    is_ocr: bool = False
+    bg_color_rgb: Optional[Tuple[float, float, float]] = None
+    auto_fit: bool = True
+    min_font_size: float = 6.0
+
+
+@dataclass
+class SearchReplaceRequest:
+    """Paramètres encapsulés pour rechercher et remplacer dans un PDF."""
+
+    search_text: str
+    replace_text: str
+    target_page: Optional[int] = None
+    use_white_bg: bool = False
+    auto_fit: bool = True
+
+
+@dataclass
 class WatermarkConfig:
     """Paramètres pour l'application d'un filigrane textuel."""
+
     text: str = ""
     font_name: str = "Arial-Bold"
     font_size: int = 44
     color_rgb: Tuple[float, float, float] = (0.7, 0.7, 0.7)
     opacity: float = 0.35
     angle: int = 45
-    pages: Optional[List[int]] = None  # None = toutes les pages
+    pages: Optional[List[int]] = None
 
 
 @dataclass
 class PageNumberConfig:
     """Paramètres pour la numérotation des pages."""
+
     enabled: bool = False
     format_str: str = "Page {page} / {total}"
-    position: str = "bottom-center"  # bottom-center, bottom-right, bottom-left, top-center, top-right
+    position: str = "bottom-center"
     font_size: int = 10
     color_rgb: Tuple[float, float, float] = (0.4, 0.4, 0.4)
     pages: Optional[List[int]] = None
@@ -115,6 +150,7 @@ class PageNumberConfig:
 @dataclass
 class OptimizationStats:
     """Statistiques issues d'une opération de compression/optimisation."""
+
     initial_bytes: int = 0
     final_bytes: int = 0
 

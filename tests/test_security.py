@@ -1,16 +1,12 @@
 """
-tests/test_security.py - Tests unitaires pour la sécurité, le chiffrement AES-256 et le déverrouillage.
+tests/test_security.py - Tests unitaires pour le chiffrement AES-256 et déverrouillage.
 """
 
 import os
+import pymupdf as fitz
 import pytest
-import fitz
 
-from core.security import (
-    protect_pdf,
-    unlock_pdf,
-    verify_pdf_password
-)
+from core.security import protect_pdf, unlock_pdf, verify_pdf_password
 
 
 def test_protect_pdf_aes256(sample_vector_pdf, test_temp_dir):
@@ -18,10 +14,8 @@ def test_protect_pdf_aes256(sample_vector_pdf, test_temp_dir):
     password = "SuperPassword2026!"
     protect_pdf(sample_vector_pdf, out_pdf, password=password)
 
-    # Vérification avec PyMuPDF direct
     doc = fitz.open(out_pdf)
     assert doc.is_encrypted
-    # Ne peut pas lire le texte sans authentification
     assert not doc.authenticate("MauvaisMotDePasse")
     assert doc.authenticate(password) > 0
     doc.close()
@@ -40,10 +34,8 @@ def test_verify_pdf_password(sample_encrypted_pdf):
 
 def test_unlock_pdf(sample_encrypted_pdf, test_temp_dir):
     unlocked_pdf = os.path.join(test_temp_dir, "test_unlocked.pdf")
-    success = unlock_pdf(sample_encrypted_pdf, unlocked_pdf, password="Secret123!")
-    assert success is True
+    assert unlock_pdf(sample_encrypted_pdf, unlocked_pdf, password="Secret123!")
 
-    # Vérifier que le nouveau document n'est plus chiffré
     doc = fitz.open(unlocked_pdf)
     assert not doc.is_encrypted
     assert len(doc) == 3
@@ -52,5 +44,6 @@ def test_unlock_pdf(sample_encrypted_pdf, test_temp_dir):
 
 def test_unlock_pdf_wrong_password(sample_encrypted_pdf, test_temp_dir):
     unlocked_pdf = os.path.join(test_temp_dir, "test_unlocked_failed.pdf")
-    success = unlock_pdf(sample_encrypted_pdf, unlocked_pdf, password="MauvaisMotDePasse")
-    assert success is False
+    assert not unlock_pdf(
+        sample_encrypted_pdf, unlocked_pdf, password="MauvaisMotDePasse"
+    )

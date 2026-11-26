@@ -1,50 +1,25 @@
 """
 core/fonts.py - Résolution multi-plateforme des polices et adaptation typographique.
-Gère la recherche de fichiers de polices système (Windows, macOS, Linux),
-les correspondances Base14 pour PDF et le calcul d'auto-ajustement (auto-fitting).
 """
 
+import logging
 import os
 import sys
-from typing import Dict, Tuple, Optional, Any, List
-import fitz
+from typing import Any, Dict, List, Optional, Tuple
+import pymupdf as fitz
 
+logger = logging.getLogger(__name__)
 
-def get_system_font_dirs() -> List[str]:
-    """Retourne la liste ordonnée des répertoires de polices selon le système d'exploitation."""
-    dirs: List[str] = []
-    
-    if sys.platform.startswith("win"):
-        windir = os.environ.get("WINDIR", "C:\\Windows")
-        dirs.append(os.path.join(windir, "Fonts"))
-        local_app = os.environ.get("LOCALAPPDATA")
-        if local_app:
-            dirs.append(os.path.join(local_app, "Microsoft", "Windows", "Fonts"))
-    elif sys.platform == "darwin":
-        dirs.extend([
-            "/Library/Fonts",
-            "/System/Library/Fonts",
-            os.path.expanduser("~/Library/Fonts")
-        ])
-    else:
-        # Linux / Unix
-        dirs.extend([
-            "/usr/share/fonts",
-            "/usr/local/share/fonts",
-            os.path.expanduser("~/.fonts"),
-            os.path.expanduser("~/.local/share/fonts")
-        ])
-
-    return [d for d in dirs if os.path.exists(d)]
-
-
-# Index de correspondance des familles de polices courantes vers des noms de fichiers types
 FONT_CANDIDATES: Dict[str, Dict[str, List[str]]] = {
     "arial": {
         "regular": ["arial.ttf", "LiberationSans-Regular.ttf", "DejaVuSans.ttf"],
         "bold": ["arialbd.ttf", "LiberationSans-Bold.ttf", "DejaVuSans-Bold.ttf"],
         "italic": ["ariali.ttf", "LiberationSans-Italic.ttf", "DejaVuSans-Oblique.ttf"],
-        "bolditalic": ["arialbi.ttf", "LiberationSans-BoldItalic.ttf", "DejaVuSans-BoldOblique.ttf"],
+        "bolditalic": [
+            "arialbi.ttf",
+            "LiberationSans-BoldItalic.ttf",
+            "DejaVuSans-BoldOblique.ttf",
+        ],
     },
     "calibri": {
         "regular": ["calibri.ttf", "Carlito-Regular.ttf", "arial.ttf"],
@@ -53,16 +28,34 @@ FONT_CANDIDATES: Dict[str, Dict[str, List[str]]] = {
         "bolditalic": ["calibriz.ttf", "Carlito-BoldItalic.ttf", "arialbi.ttf"],
     },
     "times": {
-        "regular": ["times.ttf", "timesnr.ttf", "LiberationSerif-Regular.ttf", "DejaVuSerif.ttf"],
+        "regular": [
+            "times.ttf",
+            "timesnr.ttf",
+            "LiberationSerif-Regular.ttf",
+            "DejaVuSerif.ttf",
+        ],
         "bold": ["timesbd.ttf", "LiberationSerif-Bold.ttf", "DejaVuSerif-Bold.ttf"],
         "italic": ["timesi.ttf", "LiberationSerif-Italic.ttf", "DejaVuSerif-Italic.ttf"],
-        "bolditalic": ["timesbi.ttf", "LiberationSerif-BoldItalic.ttf", "DejaVuSerif-BoldItalic.ttf"],
+        "bolditalic": [
+            "timesbi.ttf",
+            "LiberationSerif-BoldItalic.ttf",
+            "DejaVuSerif-BoldItalic.ttf",
+        ],
     },
     "courier": {
-        "regular": ["cour.ttf", "courier.ttf", "LiberationMono-Regular.ttf", "DejaVuSansMono.ttf"],
+        "regular": [
+            "cour.ttf",
+            "courier.ttf",
+            "LiberationMono-Regular.ttf",
+            "DejaVuSansMono.ttf",
+        ],
         "bold": ["courbd.ttf", "LiberationMono-Bold.ttf", "DejaVuSansMono-Bold.ttf"],
         "italic": ["couri.ttf", "LiberationMono-Italic.ttf", "DejaVuSansMono-Oblique.ttf"],
-        "bolditalic": ["courbi.ttf", "LiberationMono-BoldItalic.ttf", "DejaVuSansMono-BoldOblique.ttf"],
+        "bolditalic": [
+            "courbi.ttf",
+            "LiberationMono-BoldItalic.ttf",
+            "DejaVuSansMono-BoldOblique.ttf",
+        ],
     },
     "segoe": {
         "regular": ["segoeui.ttf", "arial.ttf"],
@@ -87,119 +80,150 @@ FONT_CANDIDATES: Dict[str, Dict[str, List[str]]] = {
         "bold": ["consolab.ttf", "courbd.ttf"],
         "italic": ["consolai.ttf", "couri.ttf"],
         "bolditalic": ["consolaz.ttf", "courbi.ttf"],
-    }
+    },
+}
+
+_BASE14_TABLE: Dict[str, Dict[Tuple[bool, bool], str]] = {
+    "serif": {
+        (False, False): "tiro",
+        (True, False): "tibo",
+        (False, True): "tiit",
+        (True, True): "tibi",
+    },
+    "mono": {
+        (False, False): "cour",
+        (True, False): "cobo",
+        (False, True): "coit",
+        (True, True): "cobi",
+    },
+    "sans": {
+        (False, False): "helv",
+        (True, False): "hebo",
+        (False, True): "heit",
+        (True, True): "hebi",
+    },
 }
 
 
-def find_font_file(family: str, is_bold: bool, is_italic: bool) -> Optional[str]:
-    """Recherche un fichier de police TTF sur le système d'exploitation."""
-    family_lower = family.lower()
-    matched_key = None
-    for key in FONT_CANDIDATES:
-        if key in family_lower:
-            matched_key = key
-            break
+def get_system_font_dirs() -> List[str]:
+    """Retourne les répertoires de polices existants selon le système d'exploitation."""
+    dirs: List[str] = []
+    if sys.platform.startswith("win"):
+        windir = os.environ.get("WINDIR", "C:\\Windows")
+        dirs.append(os.path.join(windir, "Fonts"))
+        local_app = os.environ.get("LOCALAPPDATA")
+        if local_app:
+            dirs.append(os.path.join(local_app, "Microsoft", "Windows", "Fonts"))
+    elif sys.platform == "darwin":
+        dirs.extend([
+            "/Library/Fonts",
+            "/System/Library/Fonts",
+            os.path.expanduser("~/Library/Fonts"),
+        ])
+    else:
+        dirs.extend([
+            "/usr/share/fonts",
+            "/usr/local/share/fonts",
+            os.path.expanduser("~/.fonts"),
+            os.path.expanduser("~/.local/share/fonts"),
+        ])
+    return [d for d in dirs if os.path.exists(d)]
 
-    if not matched_key:
-        matched_key = "arial"  # Repli par défaut sans-serif
 
-    style_key = "regular"
+def _style_key(is_bold: bool, is_italic: bool) -> str:
     if is_bold and is_italic:
-        style_key = "bolditalic"
-    elif is_bold:
-        style_key = "bold"
-    elif is_italic:
-        style_key = "italic"
+        return "bolditalic"
+    if is_bold:
+        return "bold"
+    if is_italic:
+        return "italic"
+    return "regular"
 
-    candidate_filenames = FONT_CANDIDATES[matched_key].get(style_key, [])
-    # Repli si variante non présente
-    if not candidate_filenames and style_key != "regular":
-        candidate_filenames = FONT_CANDIDATES[matched_key].get("regular", [])
 
-    font_dirs = get_system_font_dirs()
-
-    # 1. Recherche par nom exact dans les répertoires de polices
+def _find_direct_in_dirs(font_dirs: List[str], candidates: List[str]) -> Optional[str]:
     for fdir in font_dirs:
-        for fname in candidate_filenames:
+        for fname in candidates:
             full_path = os.path.join(fdir, fname)
             if os.path.isfile(full_path):
                 return full_path
-
-    # 2. Recherche récursive limitée sous les répertoires de polices (notamment Linux /usr/share/fonts/truetype)
-    for fdir in font_dirs:
-        for root, _, files in os.walk(fdir):
-            files_lower = {f.lower(): f for f in files}
-            for fname in candidate_filenames:
-                if fname.lower() in files_lower:
-                    return os.path.join(root, files_lower[fname.lower()])
-
     return None
 
 
+def _match_in_folder(files: List[str], candidates: List[str]) -> Optional[str]:
+    files_lower = {f.lower(): f for f in files}
+    for fname in candidates:
+        match = files_lower.get(fname.lower())
+        if match:
+            return match
+    return None
+
+
+def _find_recursive_in_dirs(font_dirs: List[str], candidates: List[str]) -> Optional[str]:
+    for fdir in font_dirs:
+        for root, _, files in os.walk(fdir):
+            match = _match_in_folder(files, candidates)
+            if match:
+                return os.path.join(root, match)
+    return None
+
+
+def find_font_file(family: str, is_bold: bool, is_italic: bool) -> Optional[str]:
+    """Recherche un fichier de police TTF sur le système."""
+    family_lower = family.lower()
+    matched_key = next((k for k in FONT_CANDIDATES if k in family_lower), "arial")
+    style = _style_key(is_bold, is_italic)
+    candidates = FONT_CANDIDATES[matched_key].get(style) or (
+        FONT_CANDIDATES[matched_key]["regular"]
+    )
+    font_dirs = get_system_font_dirs()
+    return _find_direct_in_dirs(font_dirs, candidates) or _find_recursive_in_dirs(
+        font_dirs, candidates
+    )
+
+
+def _select_base14_family(fn_lower: str) -> str:
+    if any(token in fn_lower for token in ("times", "serif", "roman")):
+        return "serif"
+    if any(token in fn_lower for token in ("courier", "mono", "code", "consola")):
+        return "mono"
+    return "sans"
+
+
 def get_font_kwargs(font_name: str, flags: int = 0) -> Dict[str, Any]:
-    """
-    Détermine les arguments optimaux pour `fitz.Page.insert_text`.
-    Retourne soit `{'fontfile': path}` si un fichier TTF est trouvé,
-    soit `{'fontname': base14_name}` en repli standard PDF garanti.
-    """
+    """Retourne les arguments optimaux (`fontfile` ou `fontname`) pour `insert_text`."""
     fn_lower = font_name.lower()
     is_bold = bool(flags & 16) or ("bold" in fn_lower) or ("gras" in fn_lower)
     is_italic = bool(flags & 2) or ("italic" in fn_lower) or ("oblique" in fn_lower)
 
-    # 1. Tentative avec police système installée
     font_file = find_font_file(font_name, is_bold=is_bold, is_italic=is_italic)
     if font_file and os.path.exists(font_file):
         return {"fontfile": font_file}
 
-    # 2. Repli Base14 standardisé PyMuPDF (aucune dépendance OS)
-    if "times" in fn_lower or "serif" in fn_lower or "roman" in fn_lower:
-        if is_bold and is_italic:
-            return {"fontname": "tibi"}
-        elif is_bold:
-            return {"fontname": "tibo"}
-        elif is_italic:
-            return {"fontname": "tiit"}
-        return {"fontname": "tiro"}
-
-    if "courier" in fn_lower or "mono" in fn_lower or "code" in fn_lower or "consola" in fn_lower:
-        if is_bold and is_italic:
-            return {"fontname": "cobi"}
-        elif is_bold:
-            return {"fontname": "cobo"}
-        elif is_italic:
-            return {"fontname": "coit"}
-        return {"fontname": "cour"}
-
-    # Sans-serif (Helvetica / Arial standard)
-    if is_bold and is_italic:
-        return {"fontname": "hebi"}
-    elif is_bold:
-        return {"fontname": "hebo"}
-    elif is_italic:
-        return {"fontname": "heit"}
-    return {"fontname": "helv"}
+    base14_fam = _select_base14_family(fn_lower)
+    return {"fontname": _BASE14_TABLE[base14_fam][(is_bold, is_italic)]}
 
 
-def measure_text_length(text: str, fontsize: float, font_kwargs: Dict[str, Any]) -> float:
-    """
-    Mesure la largeur d'un texte en points PDF, en acceptant indifféremment
-    une police Base14 ('fontname') ou un fichier TrueType ('fontfile').
-    """
+def measure_text_length(
+    text: str,
+    fontsize: float,
+    font_kwargs: Dict[str, Any],
+) -> float:
+    """Mesure la largeur d'un texte en points PDF (`fontfile` ou `fontname`)."""
     if not text or fontsize <= 0:
         return 0.0
 
     if "fontfile" in font_kwargs:
         try:
-            f = fitz.Font(fontfile=font_kwargs["fontfile"])
-            return float(f.text_length(text, fontsize=fontsize))
-        except Exception:
-            pass
+            font_obj = fitz.Font(fontfile=font_kwargs["fontfile"])
+            return float(font_obj.text_length(text, fontsize=fontsize))
+        except Exception as exc:
+            logger.debug("Repli mesure Base14 après erreur TTF : %s", exc)
 
     fontname = font_kwargs.get("fontname", "helv")
     try:
         return float(fitz.get_text_length(text, fontname=fontname, fontsize=fontsize))
-    except Exception:
-        # Repli universel standard
+    except Exception as exc:
+        logger.debug("Repli mesure helv pour '%s' : %s", fontname, exc)
         return float(fitz.get_text_length(text, fontname="helv", fontsize=fontsize))
 
 
@@ -208,13 +232,9 @@ def calculate_fit_fontsize(
     font_kwargs: Dict[str, Any],
     target_width: float,
     initial_size: float,
-    min_size: float = 6.0
+    min_size: float = 6.0,
 ) -> float:
-    """
-    Calcule la taille de police maximale permettant au texte de tenir
-    strictement dans la largeur cible `target_width`.
-    Empêche les débordements de texte lors des remplacements.
-    """
+    """Réduit proportionnellement la taille de police pour éviter tout débordement."""
     if target_width <= 0 or not text:
         return initial_size
 
@@ -222,8 +242,7 @@ def calculate_fit_fontsize(
     if measured_width <= target_width or measured_width <= 0:
         return initial_size
 
-    scale_ratio = target_width / measured_width
-    fitted_size = initial_size * scale_ratio
+    fitted_size = initial_size * (target_width / measured_width)
     return max(min_size, round(fitted_size, 1))
 
 
